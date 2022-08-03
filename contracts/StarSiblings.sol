@@ -1,13 +1,19 @@
 // SPDX-License-Identifier: MIT
-pragma solidity >=0.7.0 <0.9.0;
+pragma solidity ^0.8.7;
 
 import "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "./AdminControl.sol";
 
-contract StarSiblings is ERC1155, Ownable { 
+interface AvatarInterface {
+    function burn(uint256 tokenId) external;
+}
 
-    // Star Sailor Siblings (SSS): 0x49aC61f2202f6A2f108D59E77535337Ea41F6540
+contract StarSiblings is ERC1155, ReentrancyGuard, AdminPrivileges {
+    event TokenBurnt(address account, uint256 tokenId);
+    event TokenMinted(address account, uint256 tokenId, uint256 amount);
+
     address public burnContractERC721;
 
     uint256 public currChapter;
@@ -29,19 +35,18 @@ contract StarSiblings is ERC1155, Ownable {
     mapping(address => mapping(uint256 => uint256)) public entries;
 
     constructor() ERC1155("") {
-        burnContractERC721 = 0x3A0c5DCd221BA43B340EdAC5B7C36662fBF5685d;
+        burnContractERC721 = 0x23eD4B6E5654a57c787D2869ED4AD011eec6974a; //test nfts on rinkeby
     }
 
     function supportsInterface(bytes4 interfaceId) 
         public 
         view 
         virtual 
-        override(AdminControl, ERC1155) 
+        override(ERC1155)
         returns (bool) 
     {
         return 
             ERC1155.supportsInterface(interfaceId) 
-            || AdminControl.supportsInterface(interfaceId) 
             || super.supportsInterface(interfaceId);
     }
     
@@ -56,7 +61,7 @@ contract StarSiblings is ERC1155, Ownable {
         bool _unique,
         bool _active,
         bool _isCurrChapter
-    ) external onlyOwner {
+    ) external onlyAdmins {
         require(!chapters[_tokenId].locked, "You must unlock chapter to overwrite");
         Chapter storage chapter = chapters[_tokenId];
         chapter.description = _description;
@@ -73,9 +78,13 @@ contract StarSiblings is ERC1155, Ownable {
         if (_isCurrChapter) {
             currChapter = _tokenId;
         }
+
+        if (_starSiblings.length > 0) {
+            mint(_starSiblings, 1, _tokenId);
+        }
     }
 
-    function burnAvatar(uint256[] calldata tokenIds) external {
+    function burnAvatar(uint256[] calldata tokenIds) external nonReentrant {
         Chapter memory chapter = chapters[currChapter];
         require(chapter.active, "This chapter is not active");
         require(tokenIds.length > 0, "TokenIds can not be empty");
@@ -83,8 +92,14 @@ contract StarSiblings is ERC1155, Ownable {
         {
           require(
              entries[msg.sender][currChapter] == 0,
-             "This chapter is only accepting unqiue addresses" 
-          );  
+             "This chapter is only accepting unique addresses" 
+          );
+          if (chapter.burnThreshold > 0) {
+            require(
+                tokenIds.length == chapter.burnThreshold,
+                "You may only burn the threshold amount for unique address lists"
+            );
+          }
         }
 
         bool ovenHungee;
@@ -123,21 +138,21 @@ contract StarSiblings is ERC1155, Ownable {
 
     function awardSiblings(address[] memory accounts, uint256 amount, uint256 _tokenId) 
         external 
-        onlyOwner 
+        onlyAdmins 
     {
         mint(accounts, amount, _tokenId);
     }
 
     /** 
-    * @dev Toggles between 4 bool options within a specified chapter
+    * @dev Toggles between 4 bool options within a specified chapter. 
+    * option == 1: Permission for the NFT to be transfered,
+    * option == 2: Criteria if addresses must be unique to become a StarSibling,
+    * option == 3: Allows Avatars to be burned and become a StarSibling,
+    * option == 4: Unlocks chapter to overwrite entire chapter (Not recommended)
     * @param _tokenId can also be thought of as index
     * @param option of which bool to toggle 
-    * opiton == 1: Permission for the NFT to be tranfered
-    * opiton == 2: Criteria if addresses must be unqiue to become a StarSibling
-    * opiton == 3: Allows Avatars to be burned and become a StarSibling
-    * opiton == 4: Unlocks chapter to overwrite entire chapter (Not recommended)
     */
-    function toggleOption(uint256 _tokenId, uint256 option) external onlyOwner {
+    function toggleOption(uint256 _tokenId, uint256 option) external onlyAdmins {
         Chapter storage chapter = chapters[_tokenId];
         if (option == 1) 
         {
@@ -157,22 +172,22 @@ contract StarSiblings is ERC1155, Ownable {
         }
     }
 
-    function updateCurrentChapter(uint256 _tokenId) external onlyOwner { currChapter = _tokenId; }
+    function updateCurrentChapter(uint256 _tokenId) external onlyAdmins { currChapter = _tokenId; }
 
     function updateThresholds(uint256 _tokenId, uint256 _burnThreshold, uint256 _entryLimit) 
         external 
-        onlyOwner 
+        onlyAdmins 
     {
         Chapter storage chapter = chapters[_tokenId];
         chapter.burnThreshold = _burnThreshold;
         chapter.entryLimit = _entryLimit;
     }
 
-    function updateBurnContract(address _burnContractERC721) external onlyOwner { 
+    function updateBurnContract(address _burnContractERC721) external onlyAdmins { 
         burnContractERC721 = _burnContractERC721; 
     }
 
-    function updateURI(uint256 _tokenId, string memory _uri) external onlyOwner {
+    function updateURI(uint256 _tokenId, string memory _uri) external onlyAdmins {
         Chapter storage chapter = chapters[_tokenId];
         chapter.uri = _uri;
     }
@@ -189,9 +204,9 @@ contract StarSiblings is ERC1155, Ownable {
     /** 
     * @dev Returns an array of random addresses and associating indices from starSiblings
     * @param quantity is the amount of addresses to be pulled from siblingStar 
-    * @param seed the chainlink randomly generated number on the polygon network
+    * @param chainlinkSeed the chainlink randomly generated number on the polygon network
     */
-    function getRandomStars(uint256 _tokenId, uint256 quantity, uint256 seed) 
+    function getRandomStars(uint256 _tokenId, uint256 quantity, uint256 chainlinkSeed) 
         public 
         view 
         returns (
@@ -204,7 +219,7 @@ contract StarSiblings is ERC1155, Ownable {
         addresses = new address[](quantity);
 
         for (uint256 i = 0; i < quantity; i++) {
-            uint256 index = uint256(keccak256(abi.encode(seed, i))) % chapter.starSiblings.length;
+            uint256 index = uint256(keccak256(abi.encode(chainlinkSeed, i))) % chapter.starSiblings.length;
             addresses[i] = chapter.starSiblings[index];
             indices[i] = index;
         }
@@ -258,21 +273,17 @@ contract StarSiblings is ERC1155, Ownable {
         address _account, 
         bool ovenHungee
     ) internal {
-        uint256[] memory ids = new uint256[](tokenIds.length);
-        for (uint256 j; j < tokenIds.length; j++) {
-            ids[j] = tokenIds[j];
-        }
-
-        for (uint256 i; i < ids.length; i++) {
+        for (uint256 i; i < tokenIds.length; i++) {
             require(
                 _account == IERC721(burnContractERC721).ownerOf(tokenIds[i]), 
                 "Must be token owner and tokens must be unique"
             );
             if (ovenHungee) {
-                try IERC721(burnContractERC721).safeTransferFrom(_account, address(0xdEaD), tokenIds[i]) {
+                try AvatarInterface(burnContractERC721).burn(tokenIds[i]) {
                 } catch (bytes memory) {
                     revert("Burn failure, check if setApprovalForAll is true");
                 }
+                emit TokenBurnt(_account, tokenIds[i]);
             }
         }
     }
@@ -284,12 +295,12 @@ contract StarSiblings is ERC1155, Ownable {
     ) internal {
         for (uint256 i; i < accounts.length; i++) {
             _mint(accounts[i], _tokenId, amount, "");
-            
             entries[accounts[i]][_tokenId] += amount;
 
             for (uint256 j; j < amount; j++) {
                 chapters[_tokenId].starSiblings.push(accounts[i]);
             }
+            emit TokenMinted(accounts[i], _tokenId, amount);
         }
     }
 }
